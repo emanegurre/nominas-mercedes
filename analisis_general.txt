@@ -1,0 +1,71 @@
+ANÁLISIS GENERAL DE ARCHIVOS PDF
+===============================
+
+Fecha de análisis: 2025-04-13 16:12:57
+
+Archivo: nominas all_redacted.pdf
+Páginas: 76
+Líneas totales: 2586
+Muestra de texto:
+Fecha antigüedad : 04/01/2016
+Nº empleado 
+ 
+N° Afil.Seguridad Social : GC : 09
+Nivel salarial : 12D Grupo profesional : ESPECIALISTAC. coste : 1131
+ Periodo de liquidación del 01/03/2021 al 31/03/2021 F.E.N.: 24/03/2021Avenida de Bruselas, 30
+28108 - Alcobendas (Madrid)Mercedes-Benz España, S.A.U.Centro de Trabajo: 
+  
+  
+ Mercedes-Benz España, S.A.U.
+CCC: 0100070075001015 - Vitoria-GasteizC / Las Arenas, 1
+CIF: A79380465 CIF: A79380465
+CONCEPTO I   S   A Unidad  Tarifa / Base Retribución 
+espe...
+
+-----------------------------------
+
+Archivo: saldos all_redacted.pdf
+Páginas: 38
+Líneas totales: 598
+Muestra de texto:
+  
+RESUMEN DE SALDOS
+Número de personal
+Apellidos y nombre
+ Vacaciones
+Año Derecho Disfrutado Pendientes de disfrutar Unidad
+2020 21 21 0 Días laborables
+2021 21 0 21 Días laborablesLos saldos corresponden a su último día evaluado: 28/02/2021Centro de coste
+Laterales-1131
+Activables de Producción
+Año Derecho Disfrutado Pendiente de disfrutar Unidad
+2020 19 19 0 Días laborables
+2021 10 10 0 Días laborables
+        
+Cuentas de tiempos
+Denominación  Cantidad Unidad
+Cta.Unica F. año ant.acum -    79...
+
+-----------------------------------
+
+Archivo: tiempos nominas all_redacted.pdf
+Páginas: 79
+Líneas totales: 2064
+Muestra de texto:
+Datos de Tiempos utilizados en el cálculo de la nómina
+Número de personal
+Apellidos y nombre
+Centro de coste
+0000001131 - Laterales
+Periodo: Desde 01-abr-21 Hasta 30-abr-21
+Datos de Tiempos - Re-cálculos de meses anteriores
+Clase Absentismo / Presencia Fecha Inicio Fecha Fin Nº Horas Nº Días Días Nómina Situación
+Total 0
+Datos de Tiempos Fecha Nº Horas Días/Horas Nómina
+Nocturnidad 29-mar-21 8 8
+Reducc. tiempo s/modelo 29-mar-21 -1 -1
+Nocturnidad 30-mar-21 8 8
+Reducc. tiempo s/modelo 30-mar-21 -...
+
+-----------------------------------
+

@@ -1,0 +1,50 @@
+Datos de Tiempos utilizados en el cálculo de la nómina
+Número de personal
+Apellidos y nombre
+Centro de coste
+0000001131 - Laterales
+Periodo: Desde 01-abr-21 Hasta 30-abr-21
+Datos de Tiempos - Re-cálculos de meses anteriores
+Clase Absentismo / Presencia Fecha Inicio Fecha Fin Nº Horas Nº Días Días Nómina Situación
+Total 0
+Datos de Tiempos Fecha Nº Horas Días/Horas Nómina
+Nocturnidad 29-mar-21 8 8
+Reducc. tiempo s/modelo 29-mar-21 -1 -1
+Nocturnidad 30-mar-21 8 8
+Reducc. tiempo s/modelo 30-mar-21 -1 -1
+Nocturnidad 31-mar-21 7 7
+Fecha Inicio Fecha Fin Días laborablesNºHoras 
+TrabajadasGr. Ocupación (s/modelo 
+trabajo)Gr. Ocupación promedio 
+anual
+01-ene-21 31-ene-21 19 147     96,71%     96,08%
+01-feb-21 28-feb-21 20 155     96,87%     96,08%
+01-mar-21 31-mar-21 22 170     96,59%     96,08%
+Datos de Tiempos - Cálculos del mes actual
+Clase Absentismo / Presencia Fecha Inicio Fecha Fin Nº Horas Nº Días Días/Horas Nómina
+Total 0
+Datos de Tiempos Fecha Nº Horas Días/Horas Nómina
+Reducc. tiempo s/modelo 19-abr-21 1 1
+Nocturnidad 19-abr-21 7 7
+Reducc. tiempo s/modelo 20-abr-21 1 1
+Nocturnidad 20-abr-21 7 7
+
+
+Datos de Tiempos utilizados en el cálculo de la nómina
+Número de personal
+Apellidos y nombre
+Centro de coste
+0000001131 - Laterales
+Periodo: Desde 01-abr-21 Hasta 30-abr-21
+Datos de Tiempos Fecha Nº Horas Días/Horas Nómina
+Reducc. tiempo s/modelo 21-abr-21 1 1
+Nocturnidad 21-abr-21 7 7
+Reducc. tiempo s/modelo 22-abr-21 1 1
+Nocturnidad 22-abr-21 7 7
+Reducc. tiempo s/modelo 23-abr-21 1 1
+Nocturnidad 23-abr-21 7 7
+Fecha Inicio Fecha Fin Nivel Rendimiento Gr. Ocupación
+01-abr-21 30-abr-21 12D    100%
+Fecha Inicio Fecha Fin Días laborablesNºHoras 
+TrabajadasGr. Ocupación (s/modelo 
+trabajo)Gr. Ocupación promedio 
