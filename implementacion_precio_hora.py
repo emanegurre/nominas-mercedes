@@ -412,5 +412,500 @@ class CalculadoraPrecioHora:
         WHERE id_empleado = ? AND fecha BETWEEN ? AND ? AND es_manual = 1
         ''', (id_empleado, datetime(anio, mes, 1).strftime('%Y-%m-%d'), ultimo_dia.replace('/', '-')))
         
-        pluses_manuales 
-(Content truncated due to size limit. Use line ranges to read in chunks)
+        pluses_manuales = cursor.fetchall()
+        
+        for plus in pluses_manuales:
+            pluses[plus['tipo_plus']] = {
+                'cantidad': plus['cantidad'],
+                'valor_unitario': plus['valor_unitario'],
+                'valor_total': plus['valor_total'],
+                'fuente': 'manual'
+            }
+        
+        # Guardar desglose en la base de datos
+        for tipo_plus, datos in pluses.items():
+            cursor.execute('''
+            INSERT INTO DesglosePluses
+            (id_empleado, fecha, tipo_plus, cantidad, valor_unitario, valor_total, es_manual, comentario)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                id_empleado,
+                fecha_dt.strftime('%Y-%m-%d'),
+                tipo_plus,
+                datos['cantidad'],
+                datos['valor_unitario'],
+                datos['valor_total'],
+                1 if datos['fuente'] == 'manual' else 0,
+                f"Extraído de {datos['fuente']}"
+            ))
+        
+        self.conn.commit()
+        
+        return {
+            'fecha': fecha,
+            'pluses': pluses,
+            'total_pluses': sum(p['valor_total'] for p in pluses.values())
+        }
+    
+    def obtener_valor_plus(self, id_empleado: int, tipo_plus: str, fecha: str = None) -> Dict:
+        """Obtiene el valor unitario de un plus específico.
+        
+        Args:
+            id_empleado: ID del empleado
+            tipo_plus: Tipo de plus (ej. 'Plus Prima Calidad', 'Nocturnidad')
+            fecha: Fecha en formato 'DD/MM/YYYY' (opcional, por defecto fecha actual)
+            
+        Returns:
+            Diccionario con información del valor del plus
+        """
+        cursor = self.conn.cursor()
+        
+        # Si no se proporciona fecha, usar la fecha actual
+        if not fecha:
+            fecha = datetime.now().strftime('%d/%m/%Y')
+        
+        # Convertir fecha a formato de base de datos
+        fecha_dt = datetime.strptime(fecha, '%d/%m/%Y')
+        
+        # Buscar en configuración de tarifas
+        cursor.execute('''
+        SELECT valor, descripcion
+        FROM ConfiguracionTarifas
+        WHERE id_empleado = ? AND concepto = ? AND fecha_inicio <= ? AND (fecha_fin >= ? OR fecha_fin IS NULL)
+        ORDER BY fecha_inicio DESC
+        LIMIT 1
+        ''', (id_empleado, tipo_plus, fecha_dt.strftime('%Y-%m-%d'), fecha_dt.strftime('%Y-%m-%d')))
+        
+        config = cursor.fetchone()
+        if config:
+            return {
+                'tipo_plus': tipo_plus,
+                'valor_unitario': config['valor'],
+                'descripcion': config['descripcion'],
+                'fuente': 'configuracion',
+                'fecha': fecha
+            }
+        
+        # Si no hay configuración, buscar en histórico de nóminas
+        anio = fecha_dt.year
+        mes = fecha_dt.month
+        
+        # Obtener el primer y último día del mes
+        primer_dia = datetime(anio, mes, 1).strftime('%d/%m/%Y')
+        if mes == 12:
+            ultimo_dia = datetime(anio + 1, 1, 1) - timedelta(days=1)
+        else:
+            ultimo_dia = datetime(anio, mes + 1, 1) - timedelta(days=1)
+        ultimo_dia = ultimo_dia.strftime('%d/%m/%Y')
+        
+        # Buscar nómina del mes correspondiente
+        cursor.execute('''
+        SELECT id_nomina
+        FROM Nominas
+        WHERE id_empleado = ? AND periodo_inicio <= ? AND periodo_fin >= ?
+        ORDER BY fecha_importacion DESC
+        LIMIT 1
+        ''', (id_empleado, ultimo_dia, primer_dia))
+        
+        nomina = cursor.fetchone()
+        if nomina:
+            cursor.execute('''
+            SELECT tarifa
+            FROM ConceptosNomina
+            WHERE id_nomina = ? AND concepto = ?
+            LIMIT 1
+            ''', (nomina['id_nomina'], tipo_plus))
+            
+            concepto = cursor.fetchone()
+            if concepto:
+                return {
+                    'tipo_plus': tipo_plus,
+                    'valor_unitario': concepto['tarifa'],
+                    'descripcion': f"Extraído de nómina de {mes}/{anio}",
+                    'fuente': 'nomina',
+                    'fecha': fecha
+                }
+        
+        # Si no se encuentra, devolver valor por defecto
+        return {
+            'tipo_plus': tipo_plus,
+            'valor_unitario': 0,
+            'descripcion': "No se encontró información para este plus",
+            'fuente': 'defecto',
+            'fecha': fecha
+        }
+    
+    def establecer_valor_plus(self, id_empleado: int, tipo_plus: str, valor: float, 
+                             fecha_inicio: str, fecha_fin: str = None, descripcion: str = "") -> Dict:
+        """Establece el valor unitario de un plus específico.
+        
+        Args:
+            id_empleado: ID del empleado
+            tipo_plus: Tipo de plus (ej. 'Plus Prima Calidad', 'Nocturnidad')
+            valor: Valor unitario del plus
+            fecha_inicio: Fecha de inicio en formato 'DD/MM/YYYY'
+            fecha_fin: Fecha de fin en formato 'DD/MM/YYYY' (opcional)
+            descripcion: Descripción adicional (opcional)
+            
+        Returns:
+            Diccionario con resultado de la operación
+        """
+        cursor = self.conn.cursor()
+        
+        # Convertir fechas a formato de base de datos
+        fecha_inicio_dt = datetime.strptime(fecha_inicio, '%d/%m/%Y')
+        fecha_fin_dt = datetime.strptime(fecha_fin, '%d/%m/%Y') if fecha_fin else None
+        
+        # Insertar en configuración de tarifas
+        cursor.execute('''
+        INSERT INTO ConfiguracionTarifas
+        (id_empleado, concepto, valor, fecha_inicio, fecha_fin, descripcion)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            id_empleado,
+            tipo_plus,
+            valor,
+            fecha_inicio_dt.strftime('%Y-%m-%d'),
+            fecha_fin_dt.strftime('%Y-%m-%d') if fecha_fin_dt else None,
+            descripcion
+        ))
+        
+        self.conn.commit()
+        
+        return {
+            'resultado': 'éxito',
+            'tipo_plus': tipo_plus,
+            'valor': valor,
+            'fecha_inicio': fecha_inicio,
+            'fecha_fin': fecha_fin
+        }
+    
+    def editar_precio_hora_manual(self, id_empleado: int, fecha: str, precio_hora_base: float, 
+                                 precio_hora_efectivo: float = None, comentario: str = "") -> Dict:
+        """Establece manualmente el precio por hora para un empleado.
+        
+        Args:
+            id_empleado: ID del empleado
+            fecha: Fecha en formato 'DD/MM/YYYY'
+            precio_hora_base: Precio por hora base
+            precio_hora_efectivo: Precio por hora efectivo (opcional)
+            comentario: Comentario adicional (opcional)
+            
+        Returns:
+            Diccionario con resultado de la operación
+        """
+        cursor = self.conn.cursor()
+        
+        # Convertir fecha a formato de base de datos
+        fecha_dt = datetime.strptime(fecha, '%d/%m/%Y')
+        
+        # Si no se proporciona precio efectivo, usar el mismo que el base
+        if precio_hora_efectivo is None:
+            precio_hora_efectivo = precio_hora_base
+        
+        # Verificar si ya existe un registro para esta fecha
+        cursor.execute('''
+        SELECT id_historico
+        FROM HistoricoPrecioHora
+        WHERE id_empleado = ? AND fecha = ?
+        ''', (id_empleado, fecha_dt.strftime('%Y-%m-%d')))
+        
+        historico = cursor.fetchone()
+        
+        if historico:
+            # Actualizar registro existente
+            cursor.execute('''
+            UPDATE HistoricoPrecioHora
+            SET precio_hora_base = ?, precio_hora_efectivo = ?, comentario = ?
+            WHERE id_historico = ?
+            ''', (
+                precio_hora_base,
+                precio_hora_efectivo,
+                comentario if comentario else "Editado manualmente",
+                historico['id_historico']
+            ))
+        else:
+            # Insertar nuevo registro
+            cursor.execute('''
+            INSERT INTO HistoricoPrecioHora
+            (id_empleado, fecha, precio_hora_base, precio_hora_efectivo, horas_teoricas, horas_efectivas, salario_base, comentario)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                id_empleado,
+                fecha_dt.strftime('%Y-%m-%d'),
+                precio_hora_base,
+                precio_hora_efectivo,
+                0,  # No tenemos esta información
+                0,  # No tenemos esta información
+                0,  # No tenemos esta información
+                comentario if comentario else "Editado manualmente"
+            ))
+        
+        # Establecer también en configuración de tarifas
+        cursor.execute('''
+        INSERT INTO ConfiguracionTarifas
+        (id_empleado, concepto, valor, fecha_inicio, fecha_fin, descripcion)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            id_empleado,
+            'precio_hora_base',
+            precio_hora_base,
+            fecha_dt.strftime('%Y-%m-%d'),
+            None,
+            comentario if comentario else "Editado manualmente"
+        ))
+        
+        cursor.execute('''
+        INSERT INTO ConfiguracionTarifas
+        (id_empleado, concepto, valor, fecha_inicio, fecha_fin, descripcion)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            id_empleado,
+            'precio_hora_efectivo',
+            precio_hora_efectivo,
+            fecha_dt.strftime('%Y-%m-%d'),
+            None,
+            comentario if comentario else "Editado manualmente"
+        ))
+        
+        self.conn.commit()
+        
+        return {
+            'resultado': 'éxito',
+            'fecha': fecha,
+            'precio_hora_base': precio_hora_base,
+            'precio_hora_efectivo': precio_hora_efectivo
+        }
+    
+    def editar_plus_manual(self, id_empleado: int, fecha: str, tipo_plus: str, 
+                          cantidad: float, valor_unitario: float, comentario: str = "") -> Dict:
+        """Establece manualmente un plus para un empleado.
+        
+        Args:
+            id_empleado: ID del empleado
+            fecha: Fecha en formato 'DD/MM/YYYY'
+            tipo_plus: Tipo de plus
+            cantidad: Cantidad de unidades
+            valor_unitario: Valor unitario del plus
+            comentario: Comentario adicional (opcional)
+            
+        Returns:
+            Diccionario con resultado de la operación
+        """
+        cursor = self.conn.cursor()
+        
+        # Convertir fecha a formato de base de datos
+        fecha_dt = datetime.strptime(fecha, '%d/%m/%Y')
+        
+        # Calcular valor total
+        valor_total = cantidad * valor_unitario
+        
+        # Verificar si ya existe un registro para este plus en esta fecha
+        cursor.execute('''
+        SELECT id_desglose
+        FROM DesglosePluses
+        WHERE id_empleado = ? AND fecha = ? AND tipo_plus = ?
+        ''', (id_empleado, fecha_dt.strftime('%Y-%m-%d'), tipo_plus))
+        
+        desglose = cursor.fetchone()
+        
+        if desglose:
+            # Actualizar registro existente
+            cursor.execute('''
+            UPDATE DesglosePluses
+            SET cantidad = ?, valor_unitario = ?, valor_total = ?, es_manual = 1, comentario = ?
+            WHERE id_desglose = ?
+            ''', (
+                cantidad,
+                valor_unitario,
+                valor_total,
+                comentario if comentario else "Editado manualmente",
+                desglose['id_desglose']
+            ))
+        else:
+            # Insertar nuevo registro
+            cursor.execute('''
+            INSERT INTO DesglosePluses
+            (id_empleado, fecha, tipo_plus, cantidad, valor_unitario, valor_total, es_manual, comentario)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                id_empleado,
+                fecha_dt.strftime('%Y-%m-%d'),
+                tipo_plus,
+                cantidad,
+                valor_unitario,
+                valor_total,
+                1,
+                comentario if comentario else "Editado manualmente"
+            ))
+        
+        self.conn.commit()
+        
+        return {
+            'resultado': 'éxito',
+            'fecha': fecha,
+            'tipo_plus': tipo_plus,
+            'cantidad': cantidad,
+            'valor_unitario': valor_unitario,
+            'valor_total': valor_total
+        }
+    
+    def obtener_historico_precio_hora(self, id_empleado: int, fecha_inicio: str = None, 
+                                     fecha_fin: str = None) -> List[Dict]:
+        """Obtiene el histórico de precios por hora para un empleado.
+        
+        Args:
+            id_empleado: ID del empleado
+            fecha_inicio: Fecha de inicio en formato 'DD/MM/YYYY' (opcional)
+            fecha_fin: Fecha de fin en formato 'DD/MM/YYYY' (opcional)
+            
+        Returns:
+            Lista de diccionarios con información de precios por hora
+        """
+        cursor = self.conn.cursor()
+        
+        # Preparar consulta base
+        query = '''
+        SELECT fecha, precio_hora_base, precio_hora_efectivo, horas_teoricas, horas_efectivas, salario_base, comentario
+        FROM HistoricoPrecioHora
+        WHERE id_empleado = ?
+        '''
+        params = [id_empleado]
+        
+        # Añadir filtros de fecha si se proporcionan
+        if fecha_inicio:
+            fecha_inicio_dt = datetime.strptime(fecha_inicio, '%d/%m/%Y')
+            query += ' AND fecha >= ?'
+            params.append(fecha_inicio_dt.strftime('%Y-%m-%d'))
+        
+        if fecha_fin:
+            fecha_fin_dt = datetime.strptime(fecha_fin, '%d/%m/%Y')
+            query += ' AND fecha <= ?'
+            params.append(fecha_fin_dt.strftime('%Y-%m-%d'))
+        
+        # Ordenar por fecha
+        query += ' ORDER BY fecha'
+        
+        cursor.execute(query, params)
+        
+        historico = []
+        for row in cursor.fetchall():
+            fecha_db = datetime.strptime(row['fecha'], '%Y-%m-%d')
+            
+            historico.append({
+                'fecha': fecha_db.strftime('%d/%m/%Y'),
+                'precio_hora_base': row['precio_hora_base'],
+                'precio_hora_efectivo': row['precio_hora_efectivo'],
+                'horas_teoricas': row['horas_teoricas'],
+                'horas_efectivas': row['horas_efectivas'],
+                'salario_base': row['salario_base'],
+                'comentario': row['comentario']
+            })
+        
+        return historico
+    
+    def obtener_historico_pluses(self, id_empleado: int, tipo_plus: str = None, 
+                               fecha_inicio: str = None, fecha_fin: str = None) -> List[Dict]:
+        """Obtiene el histórico de pluses para un empleado.
+        
+        Args:
+            id_empleado: ID del empleado
+            tipo_plus: Tipo de plus específico (opcional)
+            fecha_inicio: Fecha de inicio en formato 'DD/MM/YYYY' (opcional)
+            fecha_fin: Fecha de fin en formato 'DD/MM/YYYY' (opcional)
+            
+        Returns:
+            Lista de diccionarios con información de pluses
+        """
+        cursor = self.conn.cursor()
+        
+        # Preparar consulta base
+        query = '''
+        SELECT fecha, tipo_plus, cantidad, valor_unitario, valor_total, es_manual, comentario
+        FROM DesglosePluses
+        WHERE id_empleado = ?
+        '''
+        params = [id_empleado]
+        
+        # Añadir filtro de tipo de plus si se proporciona
+        if tipo_plus:
+            query += ' AND tipo_plus = ?'
+            params.append(tipo_plus)
+        
+        # Añadir filtros de fecha si se proporcionan
+        if fecha_inicio:
+            fecha_inicio_dt = datetime.strptime(fecha_inicio, '%d/%m/%Y')
+            query += ' AND fecha >= ?'
+            params.append(fecha_inicio_dt.strftime('%Y-%m-%d'))
+        
+        if fecha_fin:
+            fecha_fin_dt = datetime.strptime(fecha_fin, '%d/%m/%Y')
+            query += ' AND fecha <= ?'
+            params.append(fecha_fin_dt.strftime('%Y-%m-%d'))
+        
+        # Ordenar por fecha y tipo de plus
+        query += ' ORDER BY fecha, tipo_plus'
+        
+        cursor.execute(query, params)
+        
+        historico = []
+        for row in cursor.fetchall():
+            fecha_db = datetime.strptime(row['fecha'], '%Y-%m-%d')
+            
+            historico.append({
+                'fecha': fecha_db.strftime('%d/%m/%Y'),
+                'tipo_plus': row['tipo_plus'],
+                'cantidad': row['cantidad'],
+                'valor_unitario': row['valor_unitario'],
+                'valor_total': row['valor_total'],
+                'es_manual': bool(row['es_manual']),
+                'comentario': row['comentario']
+            })
+        
+        return historico
+
+
+# Ejemplo de uso
+if __name__ == "__main__":
+    # Crear instancia de la calculadora
+    calculadora = CalculadoraPrecioHora()
+    
+    # Ejemplo de cálculo de precio por hora
+    id_empleado = 1  # Ajustar según la base de datos
+    fecha_actual = datetime.now().strftime('%d/%m/%Y')
+    
+    # Calcular precio por hora base
+    precio_hora_base = calculadora.calcular_precio_hora_base(id_empleado, fecha_actual)
+    print(f"Precio por hora base: {precio_hora_base}")
+    
+    # Calcular precio por hora efectivo
+    precio_hora_efectivo = calculadora.calcular_precio_hora_efectivo(id_empleado, fecha_actual)
+    print(f"Precio por hora efectivo: {precio_hora_efectivo}")
+    
+    # Desglosar pluses
+    pluses = calculadora.desglosar_pluses(id_empleado, fecha_actual)
+    print(f"Desglose de pluses: {pluses}")
+    
+    # Establecer valor de plus manualmente
+    calculadora.establecer_valor_plus(
+        id_empleado=id_empleado,
+        tipo_plus='Plus Prima Calidad',
+        valor=2.5,
+        fecha_inicio=fecha_actual,
+        descripcion='Valor establecido manualmente'
+    )
+    
+    # Editar precio por hora manualmente
+    calculadora.editar_precio_hora_manual(
+        id_empleado=id_empleado,
+        fecha=fecha_actual,
+        precio_hora_base=15.0,
+        precio_hora_efectivo=18.5,
+        comentario='Ajuste manual para pruebas'
+    )
+    
+    # Obtener histórico de precios por hora
+    historico_precios = calculadora.obtener_historico_precio_hora(id_empleado)
+    print(f"Histórico de precios por hora: {historico_precios}")
+    
+    print("\nProceso completado.")
