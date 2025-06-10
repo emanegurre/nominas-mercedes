@@ -40,7 +40,13 @@ Software para Windows 11 que permite comparar nóminas, saldos y tiempos de nóm
    ```
    pyinstaller --onefile --windowed --icon=icon.ico interfaz_usuario.py
    ```
-3. El ejecutable se creará en la carpeta `dist`
+3. Alternativamente puede ejecutar:
+   ```
+   python build_exe.py
+   ```
+   Este script utiliza el archivo `interfaz_usuario.spec` incluido para
+   generar el ejecutable automáticamente.
+4. El ejecutable se creará en la carpeta `dist`
 
 ### Opción 3: Crear un instalador con Inno Setup
 1. Crear el ejecutable con PyInstaller (ver Opción 2)
