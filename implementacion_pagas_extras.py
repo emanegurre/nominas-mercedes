@@ -409,5 +409,718 @@ class GestorPagasExtras:
             id_empleado=id_empleado,
             formula=tipo_paga['formula_calculo'],
             importe_base=config['importe_base'],
-          
-(Content truncated due to size limit. Use line ranges to read in chunks)
+            es_beneficios=bool(tipo_paga['es_beneficios']),
+            anio=anio
+        )
+        
+        if importe_bruto is None:
+            return {
+                'resultado': 'error',
+                'mensaje': 'No se pudo calcular el importe bruto de la paga'
+            }
+        
+        # Calcular retenciones
+        porcentaje_irpf = config['porcentaje_irpf'] if config['porcentaje_irpf'] is not None else 0
+        porcentaje_ss = config['porcentaje_ss'] if config['porcentaje_ss'] is not None else 0
+        otros_descuentos = config['otros_descuentos'] if config['otros_descuentos'] is not None else 0
+        
+        importe_irpf = importe_bruto * (porcentaje_irpf / 100)
+        importe_ss = importe_bruto * (porcentaje_ss / 100)
+        
+        # Calcular importe neto
+        importe_neto = importe_bruto - importe_irpf - importe_ss - otros_descuentos
+        
+        # Convertir fecha a formato de base de datos
+        fecha_pago_dt = datetime.strptime(fecha_pago, '%d/%m/%Y')
+        
+        # Verificar si ya existe esta paga para el empleado
+        cursor.execute('''
+        SELECT id_paga_empleado
+        FROM PagasExtrasEmpleados
+        WHERE id_empleado = ? AND id_tipo_paga = ? AND anio = ?
+        ''', (id_empleado, id_tipo_paga, anio))
+        
+        paga_existente = cursor.fetchone()
+        
+        if paga_existente:
+            # Actualizar paga existente
+            cursor.execute('''
+            UPDATE PagasExtrasEmpleados
+            SET fecha_pago = ?, importe_bruto = ?, porcentaje_irpf = ?, importe_irpf = ?,
+                porcentaje_ss = ?, importe_ss = ?, otros_descuentos = ?, importe_neto = ?,
+                comentario = ?
+            WHERE id_paga_empleado = ?
+            ''', (
+                fecha_pago_dt.strftime('%Y-%m-%d'),
+                importe_bruto,
+                porcentaje_irpf,
+                importe_irpf,
+                porcentaje_ss,
+                importe_ss,
+                otros_descuentos,
+                importe_neto,
+                f"Actualizado el {datetime.now().strftime('%d/%m/%Y')}",
+                paga_existente['id_paga_empleado']
+            ))
+            
+            id_paga_empleado = paga_existente['id_paga_empleado']
+        else:
+            # Crear nueva paga
+            cursor.execute('''
+            INSERT INTO PagasExtrasEmpleados
+            (id_empleado, id_tipo_paga, anio, fecha_pago, importe_bruto, porcentaje_irpf, 
+             importe_irpf, porcentaje_ss, importe_ss, otros_descuentos, importe_neto, 
+             es_pagada, comentario)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            ''', (
+                id_empleado,
+                id_tipo_paga,
+                anio,
+                fecha_pago_dt.strftime('%Y-%m-%d'),
+                importe_bruto,
+                porcentaje_irpf,
+                importe_irpf,
+                porcentaje_ss,
+                importe_ss,
+                otros_descuentos,
+                importe_neto,
+                f"Calculado el {datetime.now().strftime('%d/%m/%Y')}"
+            ))
+            
+            id_paga_empleado = cursor.lastrowid
+        
+        self.conn.commit()
+        
+        return {
+            'resultado': 'éxito',
+            'id_paga_empleado': id_paga_empleado,
+            'tipo_paga': tipo_paga['nombre'],
+            'anio': anio,
+            'fecha_pago': fecha_pago,
+            'importe_bruto': importe_bruto,
+            'retenciones': {
+                'irpf': {
+                    'porcentaje': porcentaje_irpf,
+                    'importe': importe_irpf
+                },
+                'seguridad_social': {
+                    'porcentaje': porcentaje_ss,
+                    'importe': importe_ss
+                },
+                'otros': otros_descuentos
+            },
+            'importe_neto': importe_neto
+        }
+    
+    def _calcular_importe_bruto(self, id_empleado: int, formula: str, 
+                              importe_base: float, es_beneficios: bool, anio: int) -> float:
+        """Calcula el importe bruto de una paga extra.
+        
+        Args:
+            id_empleado: ID del empleado
+            formula: Fórmula para calcular el importe
+            importe_base: Importe base configurado
+            es_beneficios: Si la paga depende de los beneficios
+            anio: Año de la paga
+            
+        Returns:
+            Importe bruto calculado o None si hay error
+        """
+        cursor = self.conn.cursor()
+        
+        # Si hay un importe base configurado, usarlo directamente
+        if importe_base is not None:
+            return importe_base
+        
+        # Obtener salario base del empleado
+        salario_base = self._obtener_salario_base(id_empleado)
+        
+        if salario_base is None:
+            return None
+        
+        # Variables para la fórmula
+        variables = {
+            'salario_base': salario_base,
+            'porcentaje_beneficios': 0,
+            'factor_convenio': 1
+        }
+        
+        # Si es paga de beneficios, obtener porcentaje de beneficios
+        if es_beneficios:
+            variables['porcentaje_beneficios'] = self._obtener_porcentaje_beneficios(anio)
+        
+        # Evaluar fórmula
+        try:
+            # Reemplazar variables en la fórmula
+            formula_eval = formula
+            for var, valor in variables.items():
+                formula_eval = formula_eval.replace(var, str(valor))
+            
+            # Evaluar fórmula
+            importe = eval(formula_eval)
+            return importe
+        except Exception:
+            return None
+    
+    def _obtener_salario_base(self, id_empleado: int) -> float:
+        """Obtiene el salario base de un empleado.
+        
+        Args:
+            id_empleado: ID del empleado
+            
+        Returns:
+            Salario base o None si no se encuentra
+        """
+        cursor = self.conn.cursor()
+        
+        # Buscar en histórico de salarios
+        cursor.execute('''
+        SELECT valor_nuevo
+        FROM HistoricoSalarios
+        WHERE id_empleado = ? AND concepto = 'Salario Base'
+        ORDER BY fecha DESC
+        LIMIT 1
+        ''', (id_empleado,))
+        
+        historico = cursor.fetchone()
+        if historico:
+            return historico['valor_nuevo']
+        
+        # Si no hay histórico, buscar en nóminas
+        cursor.execute('''
+        SELECT n.id_nomina
+        FROM Nominas n
+        WHERE n.id_empleado = ?
+        ORDER BY n.periodo_fin DESC
+        LIMIT 1
+        ''', (id_empleado,))
+        
+        nomina = cursor.fetchone()
+        if nomina:
+            cursor.execute('''
+            SELECT importe
+            FROM ConceptosNomina
+            WHERE id_nomina = ? AND concepto = 'Salario'
+            LIMIT 1
+            ''', (nomina['id_nomina'],))
+            
+            concepto_nomina = cursor.fetchone()
+            if concepto_nomina:
+                return concepto_nomina['importe']
+        
+        # Si no se encuentra, buscar en configuración de predicción
+        cursor.execute('''
+        SELECT valor
+        FROM ConfiguracionPrediccion
+        WHERE id_empleado = ? AND concepto = 'salario_base'
+        ORDER BY fecha_inicio DESC
+        LIMIT 1
+        ''', (id_empleado,))
+        
+        config = cursor.fetchone()
+        if config:
+            return config['valor']
+        
+        # Si no se encuentra en ninguna parte, devolver None
+        return None
+    
+    def _obtener_porcentaje_beneficios(self, anio: int) -> float:
+        """Obtiene el porcentaje de beneficios para un año específico.
+        
+        Args:
+            anio: Año para el que se quiere obtener el porcentaje
+            
+        Returns:
+            Porcentaje de beneficios o 0 si no se encuentra
+        """
+        cursor = self.conn.cursor()
+        
+        # Buscar en configuración de empresa
+        cursor.execute('''
+        SELECT valor
+        FROM ConfiguracionEmpresa
+        WHERE concepto = 'porcentaje_beneficios' AND anio = ?
+        ''', (anio,))
+        
+        config = cursor.fetchone()
+        if config:
+            return float(config['valor'])
+        
+        # Si no se encuentra, devolver 0
+        return 0
+    
+    def marcar_paga_como_pagada(self, id_paga_empleado: int) -> Dict:
+        """Marca una paga extra como pagada.
+        
+        Args:
+            id_paga_empleado: ID de la paga del empleado
+            
+        Returns:
+            Diccionario con resultado de la operación
+        """
+        cursor = self.conn.cursor()
+        
+        cursor.execute('''
+        UPDATE PagasExtrasEmpleados
+        SET es_pagada = 1, comentario = ?
+        WHERE id_paga_empleado = ?
+        ''', (
+            f"Marcada como pagada el {datetime.now().strftime('%d/%m/%Y')}",
+            id_paga_empleado
+        ))
+        
+        self.conn.commit()
+        
+        return {
+            'resultado': 'éxito',
+            'id_paga_empleado': id_paga_empleado,
+            'mensaje': 'Paga marcada como pagada'
+        }
+    
+    def obtener_pagas_empleado(self, id_empleado: int, anio: int = None) -> List[Dict]:
+        """Obtiene las pagas extras de un empleado.
+        
+        Args:
+            id_empleado: ID del empleado
+            anio: Año específico (opcional)
+            
+        Returns:
+            Lista de diccionarios con información de pagas
+        """
+        cursor = self.conn.cursor()
+        
+        # Preparar consulta
+        query = '''
+        SELECT p.id_paga_empleado, p.anio, p.fecha_pago, p.importe_bruto, 
+               p.porcentaje_irpf, p.importe_irpf, p.porcentaje_ss, p.importe_ss, 
+               p.otros_descuentos, p.importe_neto, p.es_pagada, p.comentario,
+               t.codigo, t.nombre, t.mes_pago, t.dia_pago
+        FROM PagasExtrasEmpleados p
+        JOIN TiposPagaExtra t ON p.id_tipo_paga = t.id_tipo_paga
+        WHERE p.id_empleado = ?
+        '''
+        params = [id_empleado]
+        
+        # Añadir filtro de año si se proporciona
+        if anio:
+            query += ' AND p.anio = ?'
+            params.append(anio)
+        
+        # Ordenar por fecha
+        query += ' ORDER BY p.fecha_pago'
+        
+        cursor.execute(query, params)
+        
+        pagas = []
+        for row in cursor.fetchall():
+            fecha_pago = datetime.strptime(row['fecha_pago'], '%Y-%m-%d')
+            
+            pagas.append({
+                'id': row['id_paga_empleado'],
+                'tipo': {
+                    'codigo': row['codigo'],
+                    'nombre': row['nombre']
+                },
+                'anio': row['anio'],
+                'fecha_pago': fecha_pago.strftime('%d/%m/%Y'),
+                'importe_bruto': row['importe_bruto'],
+                'retenciones': {
+                    'irpf': {
+                        'porcentaje': row['porcentaje_irpf'],
+                        'importe': row['importe_irpf']
+                    },
+                    'seguridad_social': {
+                        'porcentaje': row['porcentaje_ss'],
+                        'importe': row['importe_ss']
+                    },
+                    'otros': row['otros_descuentos']
+                },
+                'importe_neto': row['importe_neto'],
+                'es_pagada': bool(row['es_pagada']),
+                'comentario': row['comentario']
+            })
+        
+        return pagas
+    
+    def calcular_todas_pagas_anio(self, id_empleado: int, anio: int) -> Dict:
+        """Calcula todas las pagas extras de un empleado para un año específico.
+        
+        Args:
+            id_empleado: ID del empleado
+            anio: Año para el que se quieren calcular las pagas
+            
+        Returns:
+            Diccionario con resultado de la operación
+        """
+        cursor = self.conn.cursor()
+        
+        # Obtener todos los tipos de paga
+        cursor.execute('''
+        SELECT id_tipo_paga, nombre
+        FROM TiposPagaExtra
+        ''')
+        
+        tipos_paga = cursor.fetchall()
+        
+        resultados = []
+        
+        for tipo_paga in tipos_paga:
+            # Calcular cada paga
+            resultado = self.calcular_paga_extra(
+                id_empleado=id_empleado,
+                id_tipo_paga=tipo_paga['id_tipo_paga'],
+                anio=anio
+            )
+            
+            if resultado['resultado'] == 'éxito':
+                resultados.append({
+                    'tipo_paga': tipo_paga['nombre'],
+                    'importe_bruto': resultado['importe_bruto'],
+                    'importe_neto': resultado['importe_neto'],
+                    'fecha_pago': resultado['fecha_pago']
+                })
+        
+        # Calcular totales
+        total_bruto = sum(r['importe_bruto'] for r in resultados)
+        total_neto = sum(r['importe_neto'] for r in resultados)
+        
+        return {
+            'resultado': 'éxito',
+            'anio': anio,
+            'pagas_calculadas': len(resultados),
+            'pagas': resultados,
+            'total_bruto': total_bruto,
+            'total_neto': total_neto
+        }
+    
+    def comparar_pagas_anios(self, id_empleado: int, anio1: int, anio2: int) -> Dict:
+        """Compara las pagas extras de un empleado entre dos años.
+        
+        Args:
+            id_empleado: ID del empleado
+            anio1: Primer año para comparar
+            anio2: Segundo año para comparar
+            
+        Returns:
+            Diccionario con resultado de la comparación
+        """
+        # Obtener pagas del primer año
+        pagas_anio1 = self.obtener_pagas_empleado(id_empleado, anio1)
+        
+        # Obtener pagas del segundo año
+        pagas_anio2 = self.obtener_pagas_empleado(id_empleado, anio2)
+        
+        # Organizar pagas por tipo
+        pagas_por_tipo_anio1 = {p['tipo']['codigo']: p for p in pagas_anio1}
+        pagas_por_tipo_anio2 = {p['tipo']['codigo']: p for p in pagas_anio2}
+        
+        # Comparar pagas
+        comparaciones = []
+        
+        # Obtener todos los tipos de paga únicos
+        todos_tipos = set(list(pagas_por_tipo_anio1.keys()) + list(pagas_por_tipo_anio2.keys()))
+        
+        for tipo in todos_tipos:
+            paga_anio1 = pagas_por_tipo_anio1.get(tipo)
+            paga_anio2 = pagas_por_tipo_anio2.get(tipo)
+            
+            if paga_anio1 and paga_anio2:
+                # Calcular diferencias
+                dif_bruto = paga_anio2['importe_bruto'] - paga_anio1['importe_bruto']
+                dif_neto = paga_anio2['importe_neto'] - paga_anio1['importe_neto']
+                
+                porc_bruto = (dif_bruto / paga_anio1['importe_bruto'] * 100) if paga_anio1['importe_bruto'] > 0 else 0
+                porc_neto = (dif_neto / paga_anio1['importe_neto'] * 100) if paga_anio1['importe_neto'] > 0 else 0
+                
+                comparacion = {
+                    'tipo': tipo,
+                    'nombre': paga_anio1['tipo']['nombre'],
+                    'anio1': {
+                        'importe_bruto': paga_anio1['importe_bruto'],
+                        'importe_neto': paga_anio1['importe_neto']
+                    },
+                    'anio2': {
+                        'importe_bruto': paga_anio2['importe_bruto'],
+                        'importe_neto': paga_anio2['importe_neto']
+                    },
+                    'diferencia': {
+                        'bruto': dif_bruto,
+                        'neto': dif_neto,
+                        'porcentaje_bruto': porc_bruto,
+                        'porcentaje_neto': porc_neto
+                    }
+                }
+            elif paga_anio1:
+                comparacion = {
+                    'tipo': tipo,
+                    'nombre': paga_anio1['tipo']['nombre'],
+                    'anio1': {
+                        'importe_bruto': paga_anio1['importe_bruto'],
+                        'importe_neto': paga_anio1['importe_neto']
+                    },
+                    'anio2': {
+                        'importe_bruto': 0,
+                        'importe_neto': 0
+                    },
+                    'diferencia': {
+                        'bruto': -paga_anio1['importe_bruto'],
+                        'neto': -paga_anio1['importe_neto'],
+                        'porcentaje_bruto': -100,
+                        'porcentaje_neto': -100
+                    }
+                }
+            else:  # paga_anio2
+                comparacion = {
+                    'tipo': tipo,
+                    'nombre': paga_anio2['tipo']['nombre'],
+                    'anio1': {
+                        'importe_bruto': 0,
+                        'importe_neto': 0
+                    },
+                    'anio2': {
+                        'importe_bruto': paga_anio2['importe_bruto'],
+                        'importe_neto': paga_anio2['importe_neto']
+                    },
+                    'diferencia': {
+                        'bruto': paga_anio2['importe_bruto'],
+                        'neto': paga_anio2['importe_neto'],
+                        'porcentaje_bruto': 100,
+                        'porcentaje_neto': 100
+                    }
+                }
+            
+            comparaciones.append(comparacion)
+        
+        # Calcular totales
+        total_bruto_anio1 = sum(p['importe_bruto'] for p in pagas_anio1)
+        total_neto_anio1 = sum(p['importe_neto'] for p in pagas_anio1)
+        
+        total_bruto_anio2 = sum(p['importe_bruto'] for p in pagas_anio2)
+        total_neto_anio2 = sum(p['importe_neto'] for p in pagas_anio2)
+        
+        dif_total_bruto = total_bruto_anio2 - total_bruto_anio1
+        dif_total_neto = total_neto_anio2 - total_neto_anio1
+        
+        porc_total_bruto = (dif_total_bruto / total_bruto_anio1 * 100) if total_bruto_anio1 > 0 else 0
+        porc_total_neto = (dif_total_neto / total_neto_anio1 * 100) if total_neto_anio1 > 0 else 0
+        
+        return {
+            'resultado': 'éxito',
+            'anio1': anio1,
+            'anio2': anio2,
+            'comparaciones': comparaciones,
+            'totales': {
+                'anio1': {
+                    'bruto': total_bruto_anio1,
+                    'neto': total_neto_anio1
+                },
+                'anio2': {
+                    'bruto': total_bruto_anio2,
+                    'neto': total_neto_anio2
+                },
+                'diferencia': {
+                    'bruto': dif_total_bruto,
+                    'neto': dif_total_neto,
+                    'porcentaje_bruto': porc_total_bruto,
+                    'porcentaje_neto': porc_total_neto
+                }
+            }
+        }
+    
+    def simular_cambio_retencion(self, id_paga_empleado: int, 
+                                nuevo_porcentaje_irpf: float = None, 
+                                nuevo_porcentaje_ss: float = None, 
+                                nuevos_otros_descuentos: float = None) -> Dict:
+        """Simula un cambio en las retenciones de una paga extra.
+        
+        Args:
+            id_paga_empleado: ID de la paga del empleado
+            nuevo_porcentaje_irpf: Nuevo porcentaje de IRPF (opcional)
+            nuevo_porcentaje_ss: Nuevo porcentaje de Seguridad Social (opcional)
+            nuevos_otros_descuentos: Nuevos otros descuentos (opcional)
+            
+        Returns:
+            Diccionario con resultado de la simulación
+        """
+        cursor = self.conn.cursor()
+        
+        # Obtener información de la paga
+        cursor.execute('''
+        SELECT importe_bruto, porcentaje_irpf, importe_irpf, porcentaje_ss, 
+               importe_ss, otros_descuentos, importe_neto
+        FROM PagasExtrasEmpleados
+        WHERE id_paga_empleado = ?
+        ''', (id_paga_empleado,))
+        
+        paga = cursor.fetchone()
+        if not paga:
+            return {
+                'resultado': 'error',
+                'mensaje': 'No se encontró la paga especificada'
+            }
+        
+        # Calcular nuevos importes
+        importe_bruto = paga['importe_bruto']
+        
+        # IRPF
+        porcentaje_irpf = nuevo_porcentaje_irpf if nuevo_porcentaje_irpf is not None else paga['porcentaje_irpf']
+        importe_irpf = importe_bruto * (porcentaje_irpf / 100)
+        
+        # Seguridad Social
+        porcentaje_ss = nuevo_porcentaje_ss if nuevo_porcentaje_ss is not None else paga['porcentaje_ss']
+        importe_ss = importe_bruto * (porcentaje_ss / 100)
+        
+        # Otros descuentos
+        otros_descuentos = nuevos_otros_descuentos if nuevos_otros_descuentos is not None else paga['otros_descuentos']
+        
+        # Importe neto
+        nuevo_importe_neto = importe_bruto - importe_irpf - importe_ss - otros_descuentos
+        
+        # Calcular diferencias
+        dif_neto = nuevo_importe_neto - paga['importe_neto']
+        porc_dif = (dif_neto / paga['importe_neto'] * 100) if paga['importe_neto'] > 0 else 0
+        
+        return {
+            'resultado': 'éxito',
+            'id_paga_empleado': id_paga_empleado,
+            'importe_bruto': importe_bruto,
+            'retenciones_actuales': {
+                'irpf': {
+                    'porcentaje': paga['porcentaje_irpf'],
+                    'importe': paga['importe_irpf']
+                },
+                'seguridad_social': {
+                    'porcentaje': paga['porcentaje_ss'],
+                    'importe': paga['importe_ss']
+                },
+                'otros': paga['otros_descuentos'],
+                'importe_neto': paga['importe_neto']
+            },
+            'retenciones_simuladas': {
+                'irpf': {
+                    'porcentaje': porcentaje_irpf,
+                    'importe': importe_irpf
+                },
+                'seguridad_social': {
+                    'porcentaje': porcentaje_ss,
+                    'importe': importe_ss
+                },
+                'otros': otros_descuentos,
+                'importe_neto': nuevo_importe_neto
+            },
+            'diferencia': {
+                'importe': dif_neto,
+                'porcentaje': porc_dif
+            }
+        }
+    
+    def aplicar_cambio_retencion(self, id_paga_empleado: int, 
+                               nuevo_porcentaje_irpf: float = None, 
+                               nuevo_porcentaje_ss: float = None, 
+                               nuevos_otros_descuentos: float = None) -> Dict:
+        """Aplica un cambio en las retenciones de una paga extra.
+        
+        Args:
+            id_paga_empleado: ID de la paga del empleado
+            nuevo_porcentaje_irpf: Nuevo porcentaje de IRPF (opcional)
+            nuevo_porcentaje_ss: Nuevo porcentaje de Seguridad Social (opcional)
+            nuevos_otros_descuentos: Nuevos otros descuentos (opcional)
+            
+        Returns:
+            Diccionario con resultado de la operación
+        """
+        cursor = self.conn.cursor()
+        
+        # Obtener información de la paga
+        cursor.execute('''
+        SELECT importe_bruto, porcentaje_irpf, porcentaje_ss, otros_descuentos
+        FROM PagasExtrasEmpleados
+        WHERE id_paga_empleado = ?
+        ''', (id_paga_empleado,))
+        
+        paga = cursor.fetchone()
+        if not paga:
+            return {
+                'resultado': 'error',
+                'mensaje': 'No se encontró la paga especificada'
+            }
+        
+        # Determinar nuevos valores
+        porcentaje_irpf = nuevo_porcentaje_irpf if nuevo_porcentaje_irpf is not None else paga['porcentaje_irpf']
+        porcentaje_ss = nuevo_porcentaje_ss if nuevo_porcentaje_ss is not None else paga['porcentaje_ss']
+        otros_descuentos = nuevos_otros_descuentos if nuevos_otros_descuentos is not None else paga['otros_descuentos']
+        
+        # Calcular nuevos importes
+        importe_bruto = paga['importe_bruto']
+        importe_irpf = importe_bruto * (porcentaje_irpf / 100)
+        importe_ss = importe_bruto * (porcentaje_ss / 100)
+        importe_neto = importe_bruto - importe_irpf - importe_ss - otros_descuentos
+        
+        # Actualizar paga
+        cursor.execute('''
+        UPDATE PagasExtrasEmpleados
+        SET porcentaje_irpf = ?, importe_irpf = ?, porcentaje_ss = ?, importe_ss = ?,
+            otros_descuentos = ?, importe_neto = ?, comentario = ?
+        WHERE id_paga_empleado = ?
+        ''', (
+            porcentaje_irpf,
+            importe_irpf,
+            porcentaje_ss,
+            importe_ss,
+            otros_descuentos,
+            importe_neto,
+            f"Retenciones modificadas el {datetime.now().strftime('%d/%m/%Y')}",
+            id_paga_empleado
+        ))
+        
+        self.conn.commit()
+        
+        return {
+            'resultado': 'éxito',
+            'id_paga_empleado': id_paga_empleado,
+            'nuevas_retenciones': {
+                'irpf': {
+                    'porcentaje': porcentaje_irpf,
+                    'importe': importe_irpf
+                },
+                'seguridad_social': {
+                    'porcentaje': porcentaje_ss,
+                    'importe': importe_ss
+                },
+                'otros': otros_descuentos
+            },
+            'nuevo_importe_neto': importe_neto
+        }
+
+
+# Ejemplo de uso
+if __name__ == "__main__":
+    # Crear instancia del gestor de pagas extras
+    gestor = GestorPagasExtras()
+    
+    # Configurar paga extra
+    id_tipo_paga = 1  # Ajustar según la base de datos
+    anio_actual = datetime.now().year
+    
+    resultado = gestor.configurar_paga_extra(
+        id_tipo_paga=id_tipo_paga,
+        anio=anio_actual,
+        porcentaje_irpf=15,
+        porcentaje_ss=6.35
+    )
+    print(f"Paga extra configurada: {resultado}")
+    
+    # Calcular paga extra para un empleado
+    id_empleado = 1  # Ajustar según la base de datos
+    resultado = gestor.calcular_paga_extra(
+        id_empleado=id_empleado,
+        id_tipo_paga=id_tipo_paga,
+        anio=anio_actual
+    )
+    print(f"Paga extra calculada: {resultado}")
+    
+    # Obtener pagas del empleado
+    pagas = gestor.obtener_pagas_empleado(id_empleado, anio_actual)
+    print(f"Pagas del empleado: {len(pagas)}")
+    
+    print("\nProceso completado.")

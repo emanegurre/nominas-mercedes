@@ -433,5 +433,447 @@ class GestorIncrementosSalariales:
             salario_nuevo: Salario nuevo
             
         Returns:
-         
-(Content truncated due to size limit. Use line ranges to read in chunks)
+            Diccionario con información de la retroactividad
+        """
+        cursor = self.conn.cursor()
+        
+        # Convertir fechas a formato de base de datos
+        fecha_inicio_dt = datetime.strptime(fecha_inicio, '%Y-%m-%d')
+        fecha_fin_dt = datetime.strptime(fecha_fin, '%Y-%m-%d')
+        
+        # Calcular diferencia mensual
+        diferencia_mensual = salario_nuevo - salario_anterior
+        
+        # Calcular número de meses entre las fechas
+        meses = (fecha_fin_dt.year - fecha_inicio_dt.year) * 12 + fecha_fin_dt.month - fecha_inicio_dt.month
+        if fecha_fin_dt.day < fecha_inicio_dt.day:
+            meses -= 1
+        
+        # Ajustar si es menos de un mes
+        if meses < 1:
+            dias = (fecha_fin_dt - fecha_inicio_dt).days
+            meses = dias / 30.0  # Aproximación
+        
+        # Calcular importe total de retroactividad
+        importe_retroactividad = diferencia_mensual * meses
+        
+        # Registrar retroactividad
+        cursor.execute('''
+        INSERT INTO HistoricoSalarios
+        (id_empleado, fecha, concepto, valor_anterior, valor_nuevo, porcentaje_incremento, motivo)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            id_empleado,
+            fecha_fin,
+            f"Retroactividad {concepto}",
+            0,
+            importe_retroactividad,
+            0,
+            f"Retroactividad de {fecha_inicio_dt.strftime('%d/%m/%Y')} a {fecha_fin_dt.strftime('%d/%m/%Y')}"
+        ))
+        
+        self.conn.commit()
+        
+        return {
+            'meses': meses,
+            'diferencia_mensual': diferencia_mensual,
+            'importe_total': importe_retroactividad,
+            'fecha_inicio': fecha_inicio_dt.strftime('%d/%m/%Y'),
+            'fecha_fin': fecha_fin_dt.strftime('%d/%m/%Y')
+        }
+    
+    def aplicar_incremento_todos_empleados(self, id_incremento: int) -> Dict:
+        """Aplica un incremento salarial a todos los empleados.
+        
+        Args:
+            id_incremento: ID del incremento
+            
+        Returns:
+            Diccionario con resultado de la operación
+        """
+        cursor = self.conn.cursor()
+        
+        # Obtener todos los empleados
+        cursor.execute('SELECT id_empleado FROM Empleados')
+        
+        empleados = cursor.fetchall()
+        resultados = []
+        
+        for empleado in empleados:
+            resultado = self.aplicar_incremento_empleado(id_incremento, empleado['id_empleado'])
+            if resultado['resultado'] == 'éxito':
+                resultados.append({
+                    'id_empleado': empleado['id_empleado'],
+                    'salario_anterior': resultado['salario_anterior'],
+                    'salario_nuevo': resultado['salario_nuevo'],
+                    'diferencia': resultado['diferencia']
+                })
+        
+        return {
+            'resultado': 'éxito',
+            'empleados_actualizados': len(resultados),
+            'detalles': resultados
+        }
+    
+    def obtener_incrementos_convenio(self, id_convenio: int) -> List[Dict]:
+        """Obtiene los incrementos salariales de un convenio.
+        
+        Args:
+            id_convenio: ID del convenio
+            
+        Returns:
+            Lista de diccionarios con información de incrementos
+        """
+        cursor = self.conn.cursor()
+        
+        cursor.execute('''
+        SELECT id_incremento, concepto, porcentaje, cantidad_fija, fecha_aplicacion, 
+               fecha_fin, es_retroactivo, fecha_retroactividad, descripcion
+        FROM IncrementosSalariales
+        WHERE id_convenio = ?
+        ORDER BY fecha_aplicacion
+        ''', (id_convenio,))
+        
+        incrementos = []
+        for row in cursor.fetchall():
+            fecha_aplicacion = datetime.strptime(row['fecha_aplicacion'], '%Y-%m-%d')
+            fecha_fin = datetime.strptime(row['fecha_fin'], '%Y-%m-%d') if row['fecha_fin'] else None
+            fecha_retroactividad = datetime.strptime(row['fecha_retroactividad'], '%Y-%m-%d') if row['fecha_retroactividad'] else None
+            
+            incrementos.append({
+                'id': row['id_incremento'],
+                'concepto': row['concepto'],
+                'porcentaje': row['porcentaje'],
+                'cantidad_fija': row['cantidad_fija'],
+                'fecha_aplicacion': fecha_aplicacion.strftime('%d/%m/%Y'),
+                'fecha_fin': fecha_fin.strftime('%d/%m/%Y') if fecha_fin else None,
+                'es_retroactivo': bool(row['es_retroactivo']),
+                'fecha_retroactividad': fecha_retroactividad.strftime('%d/%m/%Y') if fecha_retroactividad else None,
+                'descripcion': row['descripcion']
+            })
+        
+        return incrementos
+    
+    def obtener_convenios_activos(self) -> List[Dict]:
+        """Obtiene los convenios colectivos activos.
+        
+        Returns:
+            Lista de diccionarios con información de convenios
+        """
+        cursor = self.conn.cursor()
+        
+        cursor.execute('''
+        SELECT id_convenio, nombre, descripcion, fecha_inicio, fecha_fin, ambito
+        FROM ConveniosColectivos
+        WHERE es_activo = 1
+        ORDER BY fecha_inicio DESC
+        ''')
+        
+        convenios = []
+        for row in cursor.fetchall():
+            fecha_inicio = datetime.strptime(row['fecha_inicio'], '%Y-%m-%d')
+            fecha_fin = datetime.strptime(row['fecha_fin'], '%Y-%m-%d')
+            
+            convenios.append({
+                'id': row['id_convenio'],
+                'nombre': row['nombre'],
+                'descripcion': row['descripcion'],
+                'fecha_inicio': fecha_inicio.strftime('%d/%m/%Y'),
+                'fecha_fin': fecha_fin.strftime('%d/%m/%Y'),
+                'ambito': row['ambito']
+            })
+        
+        return convenios
+    
+    def obtener_historico_salarios_empleado(self, id_empleado: int, 
+                                          concepto: str = None) -> List[Dict]:
+        """Obtiene el histórico de salarios de un empleado.
+        
+        Args:
+            id_empleado: ID del empleado
+            concepto: Concepto salarial específico (opcional)
+            
+        Returns:
+            Lista de diccionarios con información de histórico salarial
+        """
+        cursor = self.conn.cursor()
+        
+        # Preparar consulta
+        query = '''
+        SELECT fecha, concepto, valor_anterior, valor_nuevo, porcentaje_incremento, motivo
+        FROM HistoricoSalarios
+        WHERE id_empleado = ?
+        '''
+        params = [id_empleado]
+        
+        # Añadir filtro de concepto si se proporciona
+        if concepto:
+            query += ' AND concepto = ?'
+            params.append(concepto)
+        
+        # Ordenar por fecha
+        query += ' ORDER BY fecha DESC'
+        
+        cursor.execute(query, params)
+        
+        historico = []
+        for row in cursor.fetchall():
+            fecha = datetime.strptime(row['fecha'], '%Y-%m-%d')
+            
+            historico.append({
+                'fecha': fecha.strftime('%d/%m/%Y'),
+                'concepto': row['concepto'],
+                'valor_anterior': row['valor_anterior'],
+                'valor_nuevo': row['valor_nuevo'],
+                'porcentaje_incremento': row['porcentaje_incremento'],
+                'motivo': row['motivo']
+            })
+        
+        return historico
+    
+    def obtener_incrementos_pendientes(self, id_empleado: int = None) -> List[Dict]:
+        """Obtiene los incrementos salariales pendientes de aplicar.
+        
+        Args:
+            id_empleado: ID del empleado específico (opcional)
+            
+        Returns:
+            Lista de diccionarios con información de incrementos pendientes
+        """
+        cursor = self.conn.cursor()
+        
+        # Obtener fecha actual
+        fecha_actual = datetime.now().strftime('%Y-%m-%d')
+        
+        # Obtener incrementos con fecha de aplicación futura
+        cursor.execute('''
+        SELECT i.id_incremento, i.concepto, i.porcentaje, i.cantidad_fija, i.fecha_aplicacion,
+               i.es_retroactivo, i.fecha_retroactividad, i.descripcion, c.nombre as convenio
+        FROM IncrementosSalariales i
+        JOIN ConveniosColectivos c ON i.id_convenio = c.id_convenio
+        WHERE i.fecha_aplicacion > ? AND c.es_activo = 1
+        ORDER BY i.fecha_aplicacion
+        ''', (fecha_actual,))
+        
+        incrementos = []
+        for row in cursor.fetchall():
+            fecha_aplicacion = datetime.strptime(row['fecha_aplicacion'], '%Y-%m-%d')
+            fecha_retroactividad = datetime.strptime(row['fecha_retroactividad'], '%Y-%m-%d') if row['fecha_retroactividad'] else None
+            
+            # Si se especifica un empleado, verificar si ya se le aplicó
+            if id_empleado:
+                cursor.execute('''
+                SELECT COUNT(*) as count
+                FROM IncrementosEmpleados
+                WHERE id_incremento = ? AND id_empleado = ?
+                ''', (row['id_incremento'], id_empleado))
+                
+                if cursor.fetchone()['count'] > 0:
+                    continue  # Ya se aplicó a este empleado
+            
+            incrementos.append({
+                'id': row['id_incremento'],
+                'concepto': row['concepto'],
+                'porcentaje': row['porcentaje'],
+                'cantidad_fija': row['cantidad_fija'],
+                'fecha_aplicacion': fecha_aplicacion.strftime('%d/%m/%Y'),
+                'es_retroactivo': bool(row['es_retroactivo']),
+                'fecha_retroactividad': fecha_retroactividad.strftime('%d/%m/%Y') if fecha_retroactividad else None,
+                'descripcion': row['descripcion'],
+                'convenio': row['convenio']
+            })
+        
+        return incrementos
+    
+    def simular_incremento(self, id_empleado: int, porcentaje: float = None, 
+                          cantidad_fija: float = None, concepto: str = 'Salario Base') -> Dict:
+        """Simula un incremento salarial para un empleado.
+        
+        Args:
+            id_empleado: ID del empleado
+            porcentaje: Porcentaje de incremento (opcional)
+            cantidad_fija: Cantidad fija de incremento (opcional)
+            concepto: Concepto salarial (por defecto 'Salario Base')
+            
+        Returns:
+            Diccionario con resultado de la simulación
+        """
+        # Verificar que se proporciona al menos un tipo de incremento
+        if porcentaje is None and cantidad_fija is None:
+            return {
+                'resultado': 'error',
+                'mensaje': 'Debe proporcionar un porcentaje o una cantidad fija'
+            }
+        
+        # Obtener salario actual
+        salario_actual = self._obtener_salario_concepto(id_empleado, concepto)
+        
+        if salario_actual is None:
+            return {
+                'resultado': 'error',
+                'mensaje': f'No se encontró información salarial para el concepto {concepto}'
+            }
+        
+        # Calcular nuevo salario
+        nuevo_salario = salario_actual
+        
+        if porcentaje is not None:
+            nuevo_salario += salario_actual * (porcentaje / 100)
+        
+        if cantidad_fija is not None:
+            nuevo_salario += cantidad_fija
+        
+        # Calcular diferencia
+        diferencia = nuevo_salario - salario_actual
+        porcentaje_real = (diferencia / salario_actual * 100) if salario_actual > 0 else 0
+        
+        return {
+            'resultado': 'éxito',
+            'concepto': concepto,
+            'salario_actual': salario_actual,
+            'salario_simulado': nuevo_salario,
+            'diferencia': diferencia,
+            'porcentaje_real': porcentaje_real,
+            'incremento_mensual': diferencia,
+            'incremento_anual': diferencia * 12
+        }
+    
+    def simular_incrementos_futuros(self, id_empleado: int, anio: int) -> Dict:
+        """Simula los incrementos futuros para un empleado en un año específico.
+        
+        Args:
+            id_empleado: ID del empleado
+            anio: Año para la simulación
+            
+        Returns:
+            Diccionario con resultado de la simulación
+        """
+        cursor = self.conn.cursor()
+        
+        # Obtener fecha de inicio y fin del año
+        fecha_inicio = date(anio, 1, 1).strftime('%Y-%m-%d')
+        fecha_fin = date(anio, 12, 31).strftime('%Y-%m-%d')
+        
+        # Obtener incrementos programados para el año
+        cursor.execute('''
+        SELECT i.id_incremento, i.concepto, i.porcentaje, i.cantidad_fija, i.fecha_aplicacion,
+               i.es_retroactivo, i.fecha_retroactividad, i.descripcion, c.nombre as convenio
+        FROM IncrementosSalariales i
+        JOIN ConveniosColectivos c ON i.id_convenio = c.id_convenio
+        WHERE i.fecha_aplicacion BETWEEN ? AND ? AND c.es_activo = 1
+        ORDER BY i.fecha_aplicacion
+        ''', (fecha_inicio, fecha_fin))
+        
+        incrementos = cursor.fetchall()
+        
+        # Obtener salario base actual
+        salario_base = self._obtener_salario_concepto(id_empleado, 'Salario Base')
+        
+        if salario_base is None:
+            return {
+                'resultado': 'error',
+                'mensaje': 'No se encontró información salarial para el empleado'
+            }
+        
+        # Simular aplicación de incrementos
+        simulaciones = []
+        salario_actual = salario_base
+        
+        for incremento in incrementos:
+            fecha_aplicacion = datetime.strptime(incremento['fecha_aplicacion'], '%Y-%m-%d')
+            
+            # Verificar si aplica al concepto correcto
+            if incremento['concepto'] != 'Salario Base' and incremento['concepto'] != 'Todos':
+                continue
+            
+            # Calcular nuevo salario
+            nuevo_salario = salario_actual
+            
+            if incremento['porcentaje'] is not None:
+                nuevo_salario += salario_actual * (incremento['porcentaje'] / 100)
+            
+            if incremento['cantidad_fija'] is not None:
+                nuevo_salario += incremento['cantidad_fija']
+            
+            # Calcular diferencia
+            diferencia = nuevo_salario - salario_actual
+            porcentaje_real = (diferencia / salario_actual * 100) if salario_actual > 0 else 0
+            
+            # Calcular retroactividad si aplica
+            retroactividad = None
+            if incremento['es_retroactivo'] and incremento['fecha_retroactividad']:
+                fecha_retroactividad = datetime.strptime(incremento['fecha_retroactividad'], '%Y-%m-%d')
+                meses_retro = (fecha_aplicacion.year - fecha_retroactividad.year) * 12 + fecha_aplicacion.month - fecha_retroactividad.month
+                if meses_retro < 0:
+                    meses_retro = 0
+                retroactividad = diferencia * meses_retro
+            
+            simulacion = {
+                'fecha': fecha_aplicacion.strftime('%d/%m/%Y'),
+                'concepto': incremento['concepto'],
+                'convenio': incremento['convenio'],
+                'porcentaje': incremento['porcentaje'],
+                'cantidad_fija': incremento['cantidad_fija'],
+                'salario_anterior': salario_actual,
+                'salario_nuevo': nuevo_salario,
+                'diferencia': diferencia,
+                'porcentaje_real': porcentaje_real,
+                'retroactividad': retroactividad,
+                'descripcion': incremento['descripcion']
+            }
+            
+            simulaciones.append(simulacion)
+            
+            # Actualizar salario actual para la siguiente simulación
+            salario_actual = nuevo_salario
+        
+        # Calcular impacto anual
+        impacto_anual = salario_actual - salario_base
+        
+        return {
+            'resultado': 'éxito',
+            'anio': anio,
+            'salario_inicial': salario_base,
+            'salario_final': salario_actual,
+            'incremento_total': impacto_anual,
+            'porcentaje_total': (impacto_anual / salario_base * 100) if salario_base > 0 else 0,
+            'simulaciones': simulaciones
+        }
+
+
+# Ejemplo de uso
+if __name__ == "__main__":
+    # Crear instancia del gestor de incrementos salariales
+    gestor = GestorIncrementosSalariales()
+    
+    # Ejemplo de creación de convenio
+    resultado = gestor.crear_convenio(
+        nombre="Convenio Colectivo 2023-2025",
+        descripcion="Convenio colectivo para el periodo 2023-2025",
+        fecha_inicio="01/01/2023",
+        fecha_fin="31/12/2025",
+        ambito="Empresa"
+    )
+    print(f"Convenio creado: {resultado}")
+    
+    # Registrar incremento salarial
+    id_convenio = resultado['id_convenio']
+    resultado = gestor.registrar_incremento(
+        id_convenio=id_convenio,
+        concepto="Salario Base",
+        porcentaje=2.5,
+        fecha_aplicacion="01/01/2023",
+        descripcion="Incremento anual 2023"
+    )
+    print(f"Incremento registrado: {resultado}")
+    
+    # Simular incremento para un empleado
+    id_empleado = 1  # Ajustar según la base de datos
+    simulacion = gestor.simular_incremento(
+        id_empleado=id_empleado,
+        porcentaje=2.5,
+        concepto="Salario Base"
+    )
+    print(f"Simulación de incremento: {simulacion}")
+    
+    print("\nProceso completado.")
