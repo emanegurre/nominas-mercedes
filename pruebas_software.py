@@ -23,9 +23,10 @@ class TestExtraccionPDF(unittest.TestCase):
     
     def setUp(self):
         """Configuración inicial para las pruebas."""
-        self.ruta_nomina = "/home/ubuntu/upload/nominas all_redacted.pdf"
-        self.ruta_saldos = "/home/ubuntu/upload/saldos all_redacted.pdf"
-        self.ruta_tiempos = "/home/ubuntu/upload/tiempos nominas all_redacted.pdf"
+        base_dir = os.path.dirname(__file__)
+        self.ruta_nomina = os.path.join(base_dir, "nominas all_redacted.pdf")
+        self.ruta_saldos = os.path.join(base_dir, "saldos all_redacted.pdf")
+        self.ruta_tiempos = os.path.join(base_dir, "tiempos nominas all_redacted.pdf")
     
     def test_existencia_archivos(self):
         """Verifica que los archivos de prueba existan."""

@@ -45,7 +45,8 @@ Software para Windows 11 que permite comparar nóminas, saldos y tiempos de nóm
    python build_exe.py
    ```
    Este script utiliza el archivo `interfaz_usuario.spec` incluido para
-   generar el ejecutable automáticamente.
+   generar el ejecutable automáticamente. Ejecútelo en Windows si desea
+   obtener un ejecutable `.exe` para ese sistema operativo.
 4. El ejecutable se creará en la carpeta `dist`
 
 ### Opción 3: Crear un instalador con Inno Setup
